@@ -3,14 +3,17 @@ LOG_CONFIG = example_conf/logging.ini
 CONF_FILE ?= example_conf/jarr.json
 SERVER_PORT = 8000
 SERVER_ADDR = 0.0.0.0
-DB_VER = $(shell pipenv run ./manager.py db heads | sed -e 's/ .*//g')
+DB_VER = $(shell pipenv run flask db heads | tail -n1 | sed -e 's/ .*//g')
 COMPOSE_FILE ?= Dockerfiles/dev-env.yml
-RUN = PIPENV_IGNORE_VIRTUALENVS=1 pipenv run
-COMPOSE = $(RUN) docker-compose --project-name jarr --file $(COMPOSE_FILE)
+RUN = FLASK_APP=wsgi PIPENV_IGNORE_VIRTUALENVS=1 pipenv run
+COMPOSE = $(RUN) docker compose --project-name jarr --file $(COMPOSE_FILE)
 TEST = tests/
 DB_NAME ?= jarr
 PUBLIC_URL ?=
 REACT_APP_API_URL ?=
+QUEUE ?= jarr,jarr-crawling,jarr-clustering
+DB_CONTAINER_NAME = postgres
+QU_CONTAINER_NAME = rabbitmq
 
 install:
 	pipenv sync --dev
@@ -25,19 +28,19 @@ lint: pep8 mypy
 
 test: export JARR_CONFIG = example_conf/jarr.test.json
 test:
-	$(RUN) nosetests $(TEST) -vv --with-coverage --cover-package=jarr
+	$(RUN) pytest --cov=jarr $(TEST) -vv
 
 build-base:
 	docker build --cache-from=jarr . \
 		--file Dockerfiles/pythonbase \
 		-t jarr-base
 
-build-server: build-base
+build-server:
 	docker build --cache-from=jarr . \
 		--file Dockerfiles/server \
 		-t jarr-server
 
-build-worker: build-base
+build-worker:
 	docker build --cache-from=jarr . \
 		--file Dockerfiles/worker \
 		-t jarr-worker
@@ -57,20 +60,37 @@ run-server:
 
 run-worker: export JARR_CONFIG = $(CONF_FILE)
 run-worker:
-	$(RUN) celery worker --app ep_celery.celery_app
+	$(RUN) celery --app ep_celery.celery_app worker -Q $(QUEUE) --hostname "$(QUEUE)@%h"
 
 run-front:
 	cd jsclient/; yarn start
 
-create-db:
-	$(COMPOSE) exec postgresql su postgres -c \
-		"createuser $(DB_NAME) --no-superuser --createdb --no-createrole"
-	$(COMPOSE) exec postgresql su postgres -c "createdb $(DB_NAME) --no-password"
+db-bootstrap-user:
+	$(COMPOSE) exec $(DB_CONTAINER_NAME) su postgres -c \
+		"createuser $(DB_NAME) --superuser --createdb"
+
+db-bootstrap-tables:
+	$(COMPOSE) exec $(DB_CONTAINER_NAME) su postgres -c "createdb $(DB_NAME) --no-password"
+	$(COMPOSE) exec $(DB_CONTAINER_NAME) psql -h 0.0.0.0 -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE $(DB_NAME) to $(DB_NAME);"
+
+db-import-dump:
+	docker cp $(DUMP) jarr_$(DB_CONTAINER_NAME)_1:/tmp/dump.pgsql
+	$(COMPOSE) exec $(DB_CONTAINER_NAME) su postgres -c "pg_restore -d $(DB_NAME) /tmp/dump.pgsql"
+	$(COMPOSE) exec $(DB_CONTAINER_NAME) rm /tmp/dump.pgsql
 
 init-env: export JARR_CONFIG = $(CONF_FILE)
 init-env:
-	$(RUN) ./manager.py db_create
-	$(RUN) ./manager.py db stamp $(DB_VER)
+	$(RUN) flask bootstrap-database
+	$(RUN) flask db stamp $(DB_VER)
+
+init-env-docker: export JARR_CONFIG = $(CONF_FILE)
+init-env-docker:
+	$(COMPOSE) exec jarr-server pipenv run flask bootstrap-database
+	$(COMPOSE) exec jarr-server pipenv run flask db stamp $(DB_VER)
+
+db: export JARR_CONFIG = $(CONF_FILE)
+db:
+	$(RUN) flask db $(COMMAND)
 
 stop-env:
 	$(COMPOSE) down --remove-orphans
@@ -86,6 +106,17 @@ setup-testing: export JARR_CONFIG=example_conf/jarr.test.json
 setup-testing: export CONF_FILE=example_conf/jarr.test.json
 setup-testing:
 	make start-env
+	@echo "### waiting for database to be available"
 	sleep 2
-	make create-db
+	make db-bootstrap-user
+	make db-bootstrap-tables
 	make init-env
+
+init-rabbitmq:
+	$(COMPOSE) exec $(QU_CONTAINER_NAME) rabbitmqctl add_user jarr jarr
+	$(COMPOSE) exec $(QU_CONTAINER_NAME) rabbitmqctl add_vhost jarr
+	$(COMPOSE) exec $(QU_CONTAINER_NAME) rabbitmqctl set_user_tags jarr
+	$(COMPOSE) exec $(QU_CONTAINER_NAME) rabbitmqctl set_permissions -p jarr jarr ".*" ".*" ".*"
+
+init-worker:
+	$(RUN) python -c "from jarr.crawler.main import scheduler;scheduler()"

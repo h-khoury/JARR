@@ -1,15 +1,13 @@
 import re
-from datetime import timedelta
-
-from sqlalchemy import Boolean, Column, Integer, String, PickleType
+from sqlalchemy import Boolean, Column, Integer, PickleType, String
 from sqlalchemy.orm import relationship, validates
 
-from jarr.lib.utils import utc_now
 from jarr.bootstrap import Base, conf
+from jarr.lib.utils import utc_now
 from jarr.models.utc_datetime_type import UTCDateTime
 
 
-class User(Base):
+class User(Base):  # type: ignore
     __tablename__ = 'user'
 
     id = Column(Integer, primary_key=True)
@@ -42,31 +40,23 @@ class User(Base):
     linuxfr_identity = Column(String)
 
     # relationships
-    categories = relationship('Category', back_populates='user',
-                              cascade='all, delete-orphan',
-                              foreign_keys='[Category.user_id]')
-    feeds = relationship('Feed', back_populates='user',
-                         cascade='all, delete-orphan',
-                         foreign_keys='[Feed.user_id]')
-    articles = relationship('Article', back_populates='user',
-                            cascade='all, delete-orphan',
-                            foreign_keys='[Article.user_id]')
-    clusters = relationship('Cluster', back_populates='user',
-                            cascade='all, delete-orphan',
-                            foreign_keys='[Cluster.user_id]')
-
-    @property
-    def effectivly_active(self):
-        if not self.is_active:
-            return False
-        activity_bound = utc_now() - timedelta(days=conf.feed.stop_fetch)
-        return self.last_connection > activity_bound
+    categories = relationship(
+        'Category', back_populates='user', cascade='all, delete-orphan',
+        foreign_keys='[Category.user_id]')
+    feeds = relationship(
+        'Feed', back_populates='user', cascade='all, delete-orphan',
+        foreign_keys='[Feed.user_id]')
+    articles = relationship(
+        'Article', back_populates='user', cascade='all, delete-orphan',
+        foreign_keys='[Article.user_id]')
+    clusters = relationship(
+        'Cluster', back_populates='user', cascade='all, delete-orphan',
+        foreign_keys='[Cluster.user_id]')
 
     @validates('login')
-    @staticmethod
-    def validates_login(key, value):
+    def string_cleaning(self, key, value):
         return re.sub(r'[^a-zA-Z0-9_\.]', '', value.strip())
 
     def __repr__(self):
         """Represents a user with its id."""
-        return "<User %s(%s)>" % (self.login, self.id)
+        return f"<User {self.login}({self.id})>"

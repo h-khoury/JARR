@@ -1,10 +1,11 @@
-from flask_jwt import current_identity, jwt_required
+from flask_jwt_extended import current_user, jwt_required
 from flask_restx import Namespace, Resource, fields, inputs
 
 from jarr.controllers import FeedController
 from jarr.controllers.cluster import ClusterController
 from jarr.lib.enums import ReadReason
 from jarr.metrics import READ
+
 
 default_ns = Namespace("default", path="/")
 list_feeds_model = default_ns.model("ListFeeds", {
@@ -29,27 +30,35 @@ midle_panel_model = default_ns.model("MiddlePanel", {
         "read": fields.Boolean(default=False),
 })
 filter_parser = default_ns.parser()
-filter_parser.add_argument("search_str", type=str, store_missing=False,
-        help="if specify will filter list with the specified string")
-filter_parser.add_argument("search_title",
-        store_missing=False, type=inputs.boolean, default=True,
-        help="if True, the search_str will be looked for in title")
-filter_parser.add_argument("search_content",
-        type=inputs.boolean, default=False, store_missing=False,
-        help="if True, the search_str will be looked for in content")
-filter_parser.add_argument("filter", type=str,
-        choices=["all", "unread", "liked"], default="unread",
-        help="the boolean (all, unread or liked) filter to apply to clusters")
-filter_parser.add_argument("feed_id", type=int, store_missing=False,
-        help="the parent feed id to filter with")
-filter_parser.add_argument("category_id", type=int, store_missing=False,
-        help="the parent category id to filter with")
-filter_parser.add_argument("from_date", type=inputs.datetime_from_iso8601,
-                           store_missing=False, help="for pagination")
+filter_parser.add_argument(
+    "search_str", type=str, store_missing=False, location='args',
+    help="if specify will filter list with the specified string")
+filter_parser.add_argument(
+    "search_title", store_missing=False, type=inputs.boolean,
+    default=True, location='args',
+    help="if True, the search_str will be looked for in title")
+filter_parser.add_argument(
+    "search_content", type=inputs.boolean, default=False,
+    store_missing=False, location='args',
+    help="if True, the search_str will be looked for in content")
+filter_parser.add_argument(
+    "filter", type=str, choices=["all", "unread", "liked"],
+    default="unread", location='args',
+    help="the boolean (all, unread or liked) filter to apply to clusters")
+filter_parser.add_argument(
+    "feed_id", type=int, store_missing=False, location='args',
+    help="the parent feed id to filter with")
+filter_parser.add_argument(
+    "category_id", type=int, store_missing=False, location='args',
+    help="the parent category id to filter with")
+filter_parser.add_argument(
+    "from_date", type=inputs.datetime_from_iso8601, location='args',
+    store_missing=False, help="for pagination")
 mark_as_read_parser = filter_parser.copy()
-mark_as_read_parser.add_argument("only_singles", type=bool, default=False,
-        store_missing=False,
-        help="set to true to mark as read only cluster with one article")
+mark_as_read_parser.add_argument(
+    "only_singles", type=bool, default=False,
+    store_missing=False, location='args',
+    help="set to true to mark as read only cluster with one article")
 
 
 @default_ns.route("/list-feeds")
@@ -62,7 +71,7 @@ class ListFeeds(Resource):
     @jwt_required()
     def get():
         """Will list feeds with their category and respective id."""
-        return list(FeedController(current_identity.id).list_w_categ()), 200
+        return list(FeedController(current_user.id).list_w_categ()), 200
 
 
 @default_ns.route("/unreads")
@@ -74,7 +83,7 @@ class Unreads(Resource):
     @jwt_required()
     def get():
         """Return feeds with count of unread clusters."""
-        return ClusterController(current_identity.id).get_unreads(), 200
+        return ClusterController(current_user.id).get_unreads(), 200
 
 
 def _get_filters(in_dict):
@@ -92,9 +101,9 @@ def _get_filters(in_dict):
         search_content = in_dict.get("search_content")
         filters = []
         if search_title or not filters:
-            filters.append({"title__ilike": "%%%s%%" % search_str})
+            filters.append({"title__ilike": f"%{search_str}%"})
         if search_content:
-            filters.append({"content__ilike": "%%%s%%" % search_str})
+            filters.append({"content__ilike": f"%{search_str}%"})
         if len(filters) == 1:
             filters = filters[0]
         else:
@@ -126,7 +135,7 @@ class Clusters(Resource):
     def get():
         """Will list all cluster extract for the middle pannel."""
         attrs = filter_parser.parse_args()
-        clu_ctrl = ClusterController(current_identity.id)
+        clu_ctrl = ClusterController(current_user.id)
         return list(clu_ctrl.join_read(**_get_filters(attrs)))
 
 
@@ -143,13 +152,13 @@ class MarkClustersAsRead(Resource):
         """Will mark all clusters selected by the filter as read."""
         attrs = mark_as_read_parser.parse_args()
         filters = _get_filters(attrs)
-        clu_ctrl = ClusterController(current_identity.id)
+        clu_ctrl = ClusterController(current_user.id)
         clusters = [clu for clu in clu_ctrl.join_read(limit=None, **filters)
                     if not attrs.get("only_singles")
-                        or len(clu["feeds_id"]) == 1]
+                    or len(clu["feeds_id"]) == 1]
         if clusters:
             clu_ctrl.update({'id__in': [clu['id'] for clu in clusters]},
                             {'read': True,
                              'read_reason': ReadReason.mass_marked})
         READ.labels(ReadReason.mass_marked.value).inc(len(clusters))
-        return ClusterController(current_identity.id).get_unreads(), 200
+        return clu_ctrl.get_unreads(), 200

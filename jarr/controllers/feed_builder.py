@@ -7,6 +7,7 @@ from feedparser import FeedParserDict
 from feedparser import parse as fp_parse
 from requests.exceptions import ReadTimeout
 
+from jarr.crawler.lib.feedparser_utils import browse_keys
 from jarr.lib.const import FEED_MIMETYPES, GOOGLE_BOT_UA, REQUIRED_JSON_FEED
 from jarr.lib.enums import FeedType
 from jarr.lib.html_parsing import (extract_feed_links, extract_icon_url,
@@ -21,12 +22,16 @@ TWITTER_RE = re.compile(SCHEME + r'(www.)?twitter.com/([^ \t\n\r\f\v/]+)')
 TUMBLR_RE = re.compile(SCHEME + r'([^ \t\n\r\f\v/]+).tumblr.com/.*$')
 YOUTUBE_CHANNEL_RE = re.compile(r'((http|https):\/\/)?(www\.)?youtube\.com\/'
                                 r'channel\/([a-zA-Z0-9\-]+)')
+YOUTUBE_PLAYLIST_RE = re.compile(
+        r'((http|https):\/\/)?(www\.)?youtube\.com\/playlist')
+YOUTUBE_VIDEO_RE = re.compile(
+        r'((http|https):\/\/)?(www\.)?youtube\.com\/watch')
 
 SOUNDCLOUD_RE = re.compile(
         r'^https?://(www.)?soundcloud.com/([^ \t\n\r\f\v/]+)')
 KOREUS_RE = re.compile(r'^https?://feeds.feedburner.com/Koreus.*$')
 REDDIT_FEED_PATTERN = "https://www.reddit.com/r/%s/.rss"
-YOUTUBE_FEED_PATTERN = 'https://www.youtube.com/feeds/videos.xml?channel_id=%s'
+YOUTUBE_PATTERN = 'https://www.youtube.com/feeds/videos.xml?%s_id=%s'
 
 
 class FeedBuilderController:
@@ -80,39 +85,35 @@ class FeedBuilderController:
                 return False
         if not isinstance(self.parsed_feed, (FeedParserDict, dict)):
             return False
-        return self.parsed_feed.get('entries') \
-            or self.parsed_feed.get('items') \
-            or not self.parsed_feed.get('bozo')
+        return (self.parsed_feed.get('entries')
+                or self.parsed_feed.get('items')
+                or not self.parsed_feed.get('bozo'))
 
     def construct_from_xml_feed_content(self):
         if not self.is_parsed_feed():
             return {}
-        fp_feed = self.parsed_feed.get('feed') or {}
-
-        result = {'link': self.feed_response.url,
-                  'site_link': fp_feed.get('link'),
-                  'title': fp_feed.get('title')}
-        if self.parsed_feed.get('href'):
-            result['link'] = self.parsed_feed.get('href')
-        if fp_feed.get('subtitle'):
-            result['description'] = fp_feed.get('subtitle')
-
-        # extracting extra links
-        rel_to_link = {'self': 'link', 'alternate': 'site_link'}
-        for link in fp_feed.get('links') or []:
-            if link['rel'] not in rel_to_link:
-                logger.info('unknown link type %r', link)
-                continue
-            if result.get(rel_to_link[link['rel']]):
-                logger.debug('%r already field', rel_to_link[link['rel']])
-                continue
-            result[rel_to_link[link['rel']]] = link['href']
-
-        # extracting description
-        if not result.get('description') \
-                and (fp_feed.get('subtitle_detail') or {}).get('value'):
-            result['description'] = fp_feed['subtitle_detail']['value']
-        return {key: value for key, value in result.items() if value}
+        fp_feed = self.parsed_feed.get("feed") or {}
+        result = {"link": self.feed_response.url,
+                  "site_link": fp_feed.get("href") or fp_feed.get("link")}
+        if title := browse_keys(fp_feed, ("title", "title_detail"), "value"):
+            result["title"] = title
+        if description := browse_keys(
+            fp_feed, ("subtitle", "subtitle_detail"), "value"
+        ):
+            result["description"] = description
+        if not result["site_link"]:
+            for site_link in (fp_feed.get("links") or []):
+                try:
+                    if site_link["rel"] == "alternate":
+                        result["site_link"] = site_link["href"]
+                        break
+                except KeyError:
+                    pass
+        try:
+            result["icon_url"] = fp_feed["image"]["href"]
+        except KeyError:
+            pass
+        return result
 
     def construct_from_json_feed_content(self):
         if not self.is_parsed_feed():
@@ -173,7 +174,17 @@ class FeedBuilderController:
         youtube_match = YOUTUBE_CHANNEL_RE.match(feed['link'])
         if youtube_match:
             feed['site_link'] = feed['link']
-            feed['link'] = YOUTUBE_FEED_PATTERN % youtube_match.group(4)
+            feed['link'] = YOUTUBE_PATTERN % (
+                'channel', youtube_match.group(4))
+        if YOUTUBE_VIDEO_RE.match(feed['link']) \
+                or YOUTUBE_PLAYLIST_RE.match(feed['link']):
+            split = urllib.parse.urlsplit(feed['link'])
+            if split.query:
+                query = urllib.parse.parse_qs(split.query)
+                if query.get('list'):
+                    list_id = query['list'][0]
+                    feed['site_link'] = feed['link']
+                    feed['link'] = YOUTUBE_PATTERN % ('playlist', list_id)
         return feed
 
     @staticmethod

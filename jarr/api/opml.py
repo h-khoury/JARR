@@ -1,5 +1,5 @@
 from flask import make_response, render_template, request
-from flask_jwt import current_identity, jwt_required
+from flask_jwt_extended import current_user, jwt_required
 from flask_restx import Namespace, Resource, fields
 from werkzeug.datastructures import FileStorage
 from werkzeug.exceptions import UnprocessableEntity
@@ -8,8 +8,8 @@ import opml
 from jarr.controllers import CategoryController, FeedController, UserController
 from jarr.lib.utils import utc_now
 
-opml_ns = Namespace('opml',
-        description="Allows to export and import OPML files")
+opml_ns = Namespace(
+        'opml', description="Allows to export and import OPML files")
 model = opml_ns.model('OPML result', {
         'created': fields.Integer(),
         'failed': fields.Integer(),
@@ -29,13 +29,14 @@ class OPMLResource(Resource):
     @opml_ns.response(200, 'OK', headers=OK_GET_HEADERS)
     @jwt_required()
     def get():
-        user_id = current_identity.id
+        user_id = current_user.id
         user = UserController(user_id).get(id=user_id)
         categories = {cat.id: cat
                       for cat in CategoryController(user_id).read()}
-        response = make_response(render_template('opml.xml', user=user,
-                categories=categories, feeds=FeedController(user_id).read(),
-                now=utc_now()))
+        feeds = FeedController(user_id).read()
+        template = render_template('opml.xml', user=user, feeds=feeds,
+                                   categories=categories, now=utc_now())
+        response = make_response(template)
         for key, value in OK_GET_HEADERS.items():
             response.headers[key] = value
         return response
@@ -53,10 +54,11 @@ class OPMLResource(Resource):
         try:
             subscriptions = opml.from_string(opml_file.read())
         except Exception as error:
-            raise UnprocessableEntity("Couldn't parse OPML file (%r)" % error)
+            raise UnprocessableEntity(f"Couldn't parse OPML file ({error!r})"
+                                      ) from error
 
-        ccontr = CategoryController(current_identity.id)
-        fcontr = FeedController(current_identity.id)
+        ccontr = CategoryController(current_user.id)
+        fcontr = FeedController(current_user.id)
         counts = {'created': 0, 'existing': 0, 'failed': 0, 'exceptions': []}
         categories = {cat.name: cat.id for cat in ccontr.read()}
         for line in subscriptions:

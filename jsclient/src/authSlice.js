@@ -4,64 +4,56 @@ import { apiUrl } from "./const";
 import { storageGet, storageSet, storageRemove } from "./storageUtils";
 import { authError } from "./features/noauth/noAuthSlice";
 
-
-const refreshDelay = 10 * 60 * 1000;  // 10 mn in miliseconds
-
 const authSlice = createSlice({
   name: "auth",
-  initialState: { login: null,
-                  password: null,
-                  token: storageGet("token", "session"),
-                  refreshedAt: null,
+  initialState: { accessToken: null,
+                  accessTokenExpiresAt: null,
+                  refreshToken: storageGet("refreshToken", "local"),
   },
   reducers: {
-    attemptLogin: (state, action) => {
-      const { login, password } = action.payload;
-      return { ...state, login, password };
-    },
-    loginFailed: (state, action) => ({ token: null, login: null, password: null }),
     tokenAcquired: (state, action) => {
-      const token = action.payload.data["access_token"];
-      storageSet("token", token, "session");
-      return { ...state, token, refreshedAt: new Date().getTime() };
+      const accessToken = action.payload.data["access_token"];
+      const accessTokenExpiresAt = new Date(action.payload.data["access_token_expires_at"]).getTime();
+      const refreshToken = action.payload.data["refresh_token"];
+      if (refreshToken) {
+        storageSet("refreshToken", refreshToken, "local");
+        return { ...state, accessToken, refreshToken, accessTokenExpiresAt };
+      } else {
+        return { ...state, accessToken, accessTokenExpiresAt };
+      }
     },
-    tokenExpire: (state, action) => {
-      storageRemove("token", "session");
-      return { ...state, token: null};
-    },
-    doLogout: () => {
-      storageRemove("left-menu-open");
-      storageRemove("token", "session");
-      return { login: null, password: null, token: null };
+    purgeCredentials: () => {
+      storageRemove("refreshToken", "local");
+      return { accessToken: null, refreshToken: null, accessTokenExpiresAt: null };
     },
   },
 });
 
-export const { attemptLogin, loginFailed, tokenAcquired, tokenExpire, doLogout } = authSlice.actions;
+export const { tokenAcquired, purgeCredentials} = authSlice.actions;
 
 export default authSlice.reducer;
 
 export const doRetryOnTokenExpiration = async (payload, dispatch, getState) => {
-  const now = new Date();
+  const now = new Date().getTime();
   const state = getState();
-  if (!state.auth.refreshedAt
-      || (now.getTime() - state.auth.refreshedAt) > refreshDelay) {
+  if (!state.auth.accessTokenExpiresAt
+      || state.auth.accessTokenExpiresAt <= now) {
     // token has expired, trying to refresh it
     try {
       const result = await axios({
-        method: "get",
+        method: "post",
         url: `${apiUrl}/auth/refresh`,
-        headers: { "Authorization": state.auth.token }
+        headers: { "Authorization": state.auth.refreshToken }
       });
       dispatch(tokenAcquired(result));
       payload.headers = { "Authorization": result.data["access_token"] };
     } catch (err) { // failed to refresh it, logging out
-      dispatch(loginFailed());
+      dispatch(purgeCredentials());
       dispatch(authError({ statusText: "EXPIRED" }));
       throw err;
     }
   } else {
-    payload.headers = { "Authorization": state.auth.token };
+    payload.headers = { "Authorization": state.auth.accessToken };
   }
   try {
     return await axios(payload);
@@ -70,6 +62,7 @@ export const doRetryOnTokenExpiration = async (payload, dispatch, getState) => {
     if (err.response && err.response.status === 401
         && err.response.data && err.response.data.message
         && err.response.data.message === "Invalid token, Signature has expired") {
+      dispatch(purgeCredentials());
       dispatch(authError({ statusText: "EXPIRED" }));
     } else {
       return err.response;

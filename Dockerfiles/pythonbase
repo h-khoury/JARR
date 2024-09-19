@@ -1,5 +1,8 @@
-FROM python:3.8-slim
+FROM python:3.12-slim
 
+RUN useradd jarr --create-home --shell /bin/bash --home-dir /jarr --user-group
+COPY example_conf/jarr.json /etc/jarr/jarr.json
+WORKDIR /jarr
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         gcc \
@@ -10,9 +13,6 @@ RUN apt-get update \
     && apt clean --yes \
     && apt autoremove --yes \
     && rm -rf /var/log/apt /var/cache/apt /var/log/apt
-RUN useradd jarr --create-home --shell /bin/bash --home-dir /jarr --user-group
-COPY example_conf/jarr.json /etc/jarr/jarr.json
-WORKDIR /jarr
 USER jarr
 COPY ./Pipfil* /jarr/
 RUN mkdir /tmp/pipenv \
@@ -21,7 +21,6 @@ RUN mkdir /tmp/pipenv \
         PIPENV_HIDE_EMOJIS=true \
         PIPENV_CACHE_DIR=/tmp/pipenv pipenv sync \
     && rm -rf /tmp/pipenv
-COPY ./manager.py /jarr/manager.py
 COPY ./migrations/ /jarr/migrations
 COPY ./*.py /jarr/
 COPY ./jarr/ /jarr/jarr

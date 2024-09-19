@@ -51,6 +51,12 @@ parameters:
         help_txt: >-
           Minimum vector size to be allowed in a TF-IDF corpus.
 - crawler:
+  - use_queues:
+      default: false
+      type: bool
+      help_txt: >-
+        If true, the scheduler will dispatch tasks in several queues allowing
+        for a more precise control of the backend charge repartition
   - idle_delay:
       default: 120
       help_txt: >-
@@ -110,6 +116,12 @@ parameters:
   - server_name: {'default': '', 'type': 'str'}
 - db:
   - pg_uri: {'default': 'postgresql://postgresql/jarr'}
+  - postgres:
+    - pool_size: {'default': 10}
+    - max_overflow: {'default': 2}
+    - pool_recycle: {'default': 300}
+    - pool_pre_ping: {'default': true}
+    - pool_use_lifo: {'default': true}
   - redis:
     - host: {'default': 'redis'}
     - db: {'default': 1}
@@ -141,11 +153,11 @@ parameters:
   - secret_key:
       help_txt: Salt for cryptografic purpose.
       required: true
-  - jwt_header_prefix:
-      default: JWT
   - expiration_sec:
-      default: 86400
+      default: 3600
       help_txt: Expiration delay in second of the JWT token.
+  - refresh_token_expiration_days:
+      default: 30
   - allow_signup:
       default: true
       help_txt: Allow or not people to create account of your instance of JARR.

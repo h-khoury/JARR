@@ -1,7 +1,7 @@
 import base64
 
 from flask import Response
-from flask_jwt import current_identity, jwt_required
+from flask_jwt_extended import current_user, jwt_required
 from flask_restx import Namespace, Resource, fields
 
 from jarr.api.common import (EnumField, parse_meaningful_params,
@@ -14,6 +14,7 @@ from jarr.lib.filter import FiltersAction, FiltersTrigger, FiltersType
 feed_ns = Namespace('feed', description='Feed related operations')
 url_parser = feed_ns.parser()
 url_parser.add_argument('url', type=str, required=True,
+                        location='args',
                         nullable=False, store_missing=False)
 filter_model = feed_ns.model('Filter', {
         'action': EnumField(FiltersAction),
@@ -35,15 +36,18 @@ feed_build_model = feed_ns.model('FeedBuilder', {
         'cluster_same_category': fields.Boolean(default=True, required=True),
         'cluster_same_feed': fields.Boolean(default=True, required=True),
         'cluster_wake_up': fields.Boolean(default=True, required=True),
-        'same_link_count': fields.Integer(default=0, required=True,
+        'same_link_count': fields.Integer(
+            default=0, required=True,
             help='number of feed with same link existing for that user'),
 })
 # read only fields (and filters which are handled in a peculiar way)
 model = feed_ns.model('Feed', {
         'id': fields.Integer(readOnly=True),
-        'icon_url': fields.String(readOnly=True,
+        'icon_url': fields.String(
+            readOnly=True,
             description='The complete url to the icon image file'),
-        'last_retrieved': fields.DateTime(readOnly=True,
+        'last_retrieved': fields.DateTime(
+            readOnly=True,
             description='Date of the last time this feed was fetched'),
         'filters': fields.Nested(filter_model, as_list=True),
 })
@@ -89,7 +93,7 @@ class NewFeedResource(Resource):
     def post():
         """Create an new feed."""
         attrs = parse_meaningful_params(parser)
-        return FeedController(current_identity.id).create(**attrs), 201
+        return FeedController(current_user.id).create(**attrs), 201
 
 
 @feed_ns.route('s')
@@ -102,7 +106,7 @@ class ListFeedResource(Resource):
     @jwt_required()
     def get():
         """List all available feeds with a relative URL to their icons."""
-        return list(FeedController(current_identity.id).read())
+        return list(FeedController(current_user.id).read())
 
 
 @feed_ns.route('/<int:feed_id>')
@@ -116,7 +120,7 @@ class FeedResource(Resource):
     @jwt_required()
     def get(feed_id):
         """Read an existing feed."""
-        return FeedController(current_identity.id).get(id=feed_id), 200
+        return FeedController(current_user.id).get(id=feed_id), 200
 
     @staticmethod
     @feed_ns.expect(parser_edit)
@@ -128,7 +132,7 @@ class FeedResource(Resource):
     @jwt_required()
     def put(feed_id):
         """Update an existing feed."""
-        fctrl = FeedController(current_identity.id)
+        fctrl = FeedController(current_user.id)
         attrs = parse_meaningful_params(parser_edit)
         changed = fctrl.update({'id': feed_id}, attrs)
         if not changed:
@@ -144,7 +148,7 @@ class FeedResource(Resource):
     @jwt_required()
     def delete(feed_id):
         """Delete an existing feed."""
-        fctrl = FeedController(current_identity.id)
+        fctrl = FeedController(current_user.id)
         if not fctrl.update({'id': feed_id}, {'status': FeedStatus.to_delete}):
             fctrl.assert_right_ok(feed_id)
         return None, 204
@@ -174,7 +178,7 @@ class FeedBuilder(Resource):
         feed = FeedBuilderController(url).construct()
         if feed.get('link'):
             code = 200
-            fctrl = FeedController(current_identity.id)
+            fctrl = FeedController(current_user.id)
             feed['same_link_count'] = fctrl.read(link=feed.get('link')).count()
         return feed, code
 
